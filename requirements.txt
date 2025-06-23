@@ -1,0 +1,14 @@
+flask
+plotly
+
+flask_wtf
+email-validator
+weasyprint
+
+biopython
+primer3-py
+flask-cors
+
+openai
+
+yfinance
