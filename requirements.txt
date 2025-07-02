@@ -12,3 +12,16 @@ flask-cors
 openai
 
 yfinance
+
+python-dotenv
+flask-cors
+primer3-py
+viennarna
+plotly
+pandas
+yfinance
+Pillow
+weasyprint
+wordcloud
+matplotlib
+
