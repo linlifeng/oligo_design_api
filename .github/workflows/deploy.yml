@@ -45,4 +45,4 @@ jobs:
           script: |
             cd /home/phill/dev/oligo_design_api/
             chmod +x deploy.sh
-            ./deploy.sh
+            nohup ./deploy.sh > deployment.log 2>&1 &"
