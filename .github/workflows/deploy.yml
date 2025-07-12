@@ -46,29 +46,29 @@ jobs:
     #         cd /home/phill/dev/oligo_design_api/
     #         chmod +x deploy.sh
     #         nohup ./deploy.sh > deployment.log 2>&1 &
-deploy:
-  needs: test
-  runs-on: ubuntu-latest
-  steps:
-    - uses: actions/checkout@v4
-    
-    - name: Copy files to EC2 via SSH
-      uses: appleboy/scp-action@master
-      with:
-        host: ${{ secrets.EC2_HOST }}
-        username: ${{ secrets.EC2_USER }}
-        key: ${{ secrets.EC2_SSH_KEY }}
-        source: "./"
-        target: "/home/phill/dev/oligo_design_api/"
-        
-    - name: Deploy and restart API on EC2
-      uses: appleboy/ssh-action@master
-      with:
-        host: ${{ secrets.EC2_HOST }}
-        username: ${{ secrets.EC2_USER }}
-        key: ${{ secrets.EC2_SSH_KEY }}
-        script: |
-          cd /home/phill/dev/oligo_design_api/
-          chmod +x deploy.sh
-          ./deploy.sh
-          echo "Deploy script completed with exit code: $?"
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Copy files to EC2 via SSH
+        uses: appleboy/scp-action@master
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          source: "./"
+          target: "/home/phill/dev/oligo_design_api/"
+          
+      - name: Deploy and restart API on EC2
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            cd /home/phill/dev/oligo_design_api/
+            chmod +x deploy.sh
+            ./deploy.sh
+            echo "Deploy script completed with exit code: $?"
