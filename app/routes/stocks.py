@@ -96,22 +96,6 @@ def get_stock_data():
 
 
 
-@stocks_bp.route('/tickers', methods=['GET', 'POST'])
-def manage_tickers():
-    path = 'tickers.json'
-
-    if request.method == 'GET':
-        with open(path) as f:
-            return jsonify(json.load(f))
-    elif request.method == 'POST':
-        data = request.get_json()
-        tickers = data.get('tickers')
-        if not isinstance(tickers, list):
-            return jsonify({"error": "tickers must be a list"}), 400
-        with open(path, 'w') as f:
-            json.dump({"tickers": tickers}, f, indent=2)
-        return jsonify({"message": "Tickers updated"}), 200
-
 import os
 
 TICKERS_FILE = os.path.join(os.path.dirname(__file__), '../../tickers.json')
