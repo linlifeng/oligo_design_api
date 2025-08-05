@@ -1,5 +1,6 @@
 flask
 plotly
+json
 
 flask_wtf
 email-validator

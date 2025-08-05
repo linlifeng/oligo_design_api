@@ -30,9 +30,12 @@ def save_history(history):
 
 
 def send_email_notification(subject, body):
-    EMAIL_ADDRESS = "youremail@gmail.com"
-    EMAIL_PASSWORD = "yourpassword"  # Or use app password
-    TO_EMAIL = "youremail@gmail.com"
+    import os
+
+    EMAIL_ADDRESS = os.getenv("EMAIL_ADDRESS")
+    EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
+
+    TO_EMAIL = "linlifeng@gmail.com"
 
     msg = EmailMessage()
     msg['Subject'] = subject
