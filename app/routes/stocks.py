@@ -2,6 +2,7 @@
 from flask import Blueprint, request, jsonify
 import logging
 import yfinance as yf
+import json
 
 stocks_bp = Blueprint('stocks', __name__)
 
