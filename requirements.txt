@@ -11,14 +11,17 @@ flask-cors
 
 openai
 
-yfinance
 
 python-dotenv
 flask-cors
 primer3-py
 viennarna
 pandas
+
 yfinance
+pytz
+requests
+
 Pillow
 weasyprint
 wordcloud
