@@ -94,3 +94,48 @@ def get_stock_data():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+
+
+@stocks_bp.route('/tickers', methods=['GET', 'POST'])
+def manage_tickers():
+    path = 'tickers.json'
+
+    if request.method == 'GET':
+        with open(path) as f:
+            return jsonify(json.load(f))
+    elif request.method == 'POST':
+        data = request.get_json()
+        tickers = data.get('tickers')
+        if not isinstance(tickers, list):
+            return jsonify({"error": "tickers must be a list"}), 400
+        with open(path, 'w') as f:
+            json.dump({"tickers": tickers}, f, indent=2)
+        return jsonify({"message": "Tickers updated"}), 200
+
+import os
+
+TICKERS_FILE = os.path.join(os.path.dirname(__file__), '../../tickers.json')
+
+
+@stocks_bp.route('/tickers', methods=['GET', 'POST'])
+def manage_tickers():
+    if request.method == 'GET':
+        try:
+            with open(TICKERS_FILE, 'r') as f:
+                tickers = json.load(f)
+            return jsonify(tickers)
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
+
+    elif request.method == 'POST':
+        data = request.get_json()
+        tickers = data.get('tickers')
+        if not isinstance(tickers, list):
+            return jsonify({'error': 'Tickers must be a list'}), 400
+
+        try:
+            with open(TICKERS_FILE, 'w') as f:
+                json.dump({'tickers': tickers}, f, indent=2)
+            return jsonify({'message': 'Tickers updated successfully'})
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
