@@ -57,31 +57,11 @@ def get_stock_data():
         return jsonify({'error': 'Missing stock symbol'}), 400
 
     try:
-        # yfinance occasionally returns empty frames from one path; try both APIs.
         ticker = yf.Ticker(symbol)
-        hist = ticker.history(period='6mo', interval='1d', auto_adjust=False, actions=False)
+        hist = ticker.history(period='90d')  # Up to 60 days
 
         if hist.empty:
-            hist = yf.download(
-                symbol,
-                period='6mo',
-                interval='1d',
-                auto_adjust=False,
-                progress=False,
-                threads=False,
-            )
-
-        if hist.empty:
-            return jsonify({'error': f'No data returned for {symbol}'}), 404
-
-        # yf.download can return multi-index columns depending on settings.
-        if hasattr(hist.columns, 'nlevels') and hist.columns.nlevels > 1:
-            hist.columns = hist.columns.get_level_values(0)
-
-        required_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
-        missing_cols = [c for c in required_cols if c not in hist.columns]
-        if missing_cols:
-            return jsonify({'error': f'Missing columns for {symbol}: {", ".join(missing_cols)}'}), 500
+            return jsonify({'error': 'No data returned'}), 404
 
         hist = hist.sort_index(ascending=False)
 
