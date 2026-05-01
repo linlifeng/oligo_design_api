@@ -3,7 +3,7 @@ import json
 import time
 import smtplib
 from email.message import EmailMessage
-from datetime import datetime, time as dt_time
+from datetime import datetime
 import pytz
 import os
 
@@ -12,23 +12,31 @@ API_BASE_URL = "https://api.oligodesign.com/api/stocks"
 TICKERS_API_URL = f"{API_BASE_URL}/tickers"
 SIGNALS_API_URL = f"{API_BASE_URL}/signals"
 HISTORY_FILE = "signal_history.json"
-CHECK_INTERVAL = 1800  # 30 minutes in seconds
 
-# Trading hours (Eastern Time)
-MARKET_OPEN = dt_time(9, 30)  # 9:30 AM ET
-MARKET_CLOSE = dt_time(16, 0)  # 4:00 PM ET
+# Poll every minute, but only send at configured ET times.
+POLL_INTERVAL_SECONDS = int(os.getenv("AGENT_POLL_SECONDS", "60"))
+RUN_TIMES_ET = [
+    t.strip() for t in os.getenv("RUN_TIMES_ET", "09:35,15:55").split(",")
+    if t.strip()
+]
 
-def is_trading_hours():
-    """Check if current time is within trading hours (Monday-Friday, 9:30 AM - 4:00 PM ET)"""
-    et_tz = pytz.timezone('US/Eastern')
-    now_et = datetime.now(et_tz)
-    
-    # Check if it's a weekday (Monday=0, Sunday=6)
-    if now_et.weekday() >= 5:  # Saturday or Sunday
-        return False
-    
-    current_time = now_et.time()
-    return MARKET_OPEN <= current_time <= MARKET_CLOSE
+ET_TZ = pytz.timezone('US/Eastern')
+
+
+def _now_et():
+    return datetime.now(ET_TZ)
+
+
+def _is_weekday_et():
+    return _now_et().weekday() < 5
+
+
+def _today_et():
+    return _now_et().strftime('%Y-%m-%d')
+
+
+def _hhmm_et():
+    return _now_et().strftime('%H:%M')
 
 def load_tickers():
     """Load tickers from the API"""
@@ -51,13 +59,18 @@ def load_history():
     """Load signal history from file"""
     try:
         with open(HISTORY_FILE) as f:
-            return json.load(f)
+            history = json.load(f)
+        if not isinstance(history, dict):
+            return {}
+        history.setdefault("__meta__", {})
+        history["__meta__"].setdefault("sent_slots", {})
+        return history
     except FileNotFoundError:
         print("No history file found. Starting fresh.")
-        return {}
+        return {"__meta__": {"sent_slots": {}}}
     except json.JSONDecodeError as e:
         print(f"Error reading history file: {e}. Starting fresh.")
-        return {}
+        return {"__meta__": {"sent_slots": {}}}
 
 def save_history(history):
     """Save signal history to file"""
@@ -68,24 +81,30 @@ def save_history(history):
         print(f"Error saving history: {e}")
 
 def send_email_notification(subject, body):
-    """Send email notification"""
+    """Send email notification via Zoho-compatible SMTP."""
     try:
-        EMAIL_ADDRESS = os.getenv("EMAIL_ADDRESS")
-        EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
-        TO_EMAIL = "linlifeng@gmail.com"
+        smtp_host = os.getenv("SMTP_HOST", "smtp.zoho.com")
+        smtp_port = int(os.getenv("SMTP_PORT", "587"))
+        smtp_username = os.getenv("SMTP_USERNAME") or os.getenv("EMAIL_ADDRESS")
+        smtp_password = os.getenv("SMTP_PASSWORD") or os.getenv("EMAIL_PASSWORD")
+        smtp_use_tls = os.getenv("SMTP_USE_TLS", "true").strip().lower() not in {"0", "false", "no"}
+        mail_from = os.getenv("MAIL_FROM", smtp_username or "")
+        to_email = os.getenv("TO_EMAIL", "linlifeng@gmail.com")
 
-        if not EMAIL_ADDRESS or not EMAIL_PASSWORD:
-            print("Email credentials not found in environment variables")
+        if not smtp_username or not smtp_password:
+            print("SMTP credentials missing (SMTP_USERNAME/SMTP_PASSWORD or EMAIL_ADDRESS/EMAIL_PASSWORD)")
             return False
 
         msg = EmailMessage()
         msg['Subject'] = subject
-        msg['From'] = EMAIL_ADDRESS
-        msg['To'] = TO_EMAIL
+        msg['From'] = mail_from
+        msg['To'] = to_email
         msg.set_content(body)
 
-        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
-            smtp.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
+        with smtplib.SMTP(smtp_host, smtp_port, timeout=20) as smtp:
+            if smtp_use_tls:
+                smtp.starttls()
+            smtp.login(smtp_username, smtp_password)
             smtp.send_message(msg)
         
         print("Email notification sent successfully")
@@ -96,7 +115,7 @@ def send_email_notification(subject, body):
         return False
 
 def check_signals():
-    """Check for new trading signals"""
+    """Check signals and send a digest email for the current scheduled run."""
     print("Loading tickers...")
     tickers = load_tickers()
     
@@ -123,7 +142,7 @@ def check_signals():
         return
 
     new_signals = []
-    today = datetime.now().strftime('%Y-%m-%d')
+    today = _today_et()
 
     for ticker, signals in result.items():
         if "error" in signals:
@@ -150,54 +169,79 @@ def check_signals():
             "sell_signals": signals.get('sell_signals', [])
         }
 
-    # Send notification if there are new signals
+    now_str = _now_et().strftime('%Y-%m-%d %H:%M:%S ET')
+    body = f"Stock scan completed at {now_str}.\n\n"
+
     if new_signals:
-        body = f"New trading signals detected at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}:\n\n"
-        
+        body += "New signals detected:\n"
         for ticker, buys, sells in new_signals:
             if buys:
                 body += f"🟢 [{ticker}] BUY signals on: {', '.join(buys)}\n"
             if sells:
                 body += f"🔴 [{ticker}] SELL signals on: {', '.join(sells)}\n"
-        
-        body += f"\nTotal signals: {len(new_signals)} ticker(s)\n"
-        body += f"Check time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S ET')}"
-        
-        print(body)
-        send_email_notification("🚨 Stock Signal Alert", body)
+        subject = f"🚨 Stock Signal Alert ({len(new_signals)} ticker(s))"
     else:
-        print("No new signals detected.")
+        body += "No new BUY/SELL signals in this run.\n"
+        subject = "📊 Stock Scan Digest (No New Signals)"
+
+    body += f"\nChecked tickers: {', '.join(tickers)}\n"
+    body += f"Signal run count: {len(result)} ticker(s)\n"
+
+    print(body)
+    send_email_notification(subject, body)
 
     # Save updated history
     save_history(history)
 
+def _slot_already_sent_today(history, slot_hhmm):
+    sent_slots = history.get("__meta__", {}).get("sent_slots", {})
+    return slot_hhmm in sent_slots.get(_today_et(), [])
+
+
+def _mark_slot_sent_today(history, slot_hhmm):
+    history.setdefault("__meta__", {}).setdefault("sent_slots", {})
+    today_slots = history["__meta__"]["sent_slots"].setdefault(_today_et(), [])
+    if slot_hhmm not in today_slots:
+        today_slots.append(slot_hhmm)
+
+
 def run_agent():
-    """Main agent loop"""
+    """Main agent loop: send exactly at configured ET slots on weekdays."""
     print("Stock Signal Agent starting...")
-    print(f"Check interval: {CHECK_INTERVAL/60} minutes")
-    print(f"Trading hours: {MARKET_OPEN} - {MARKET_CLOSE} ET, Monday-Friday")
-    
+    print(f"Run times (ET): {', '.join(RUN_TIMES_ET)}")
+    print(f"Poll interval: {POLL_INTERVAL_SECONDS}s")
+
     while True:
-        current_time = datetime.now()
-        print(f"\n[{current_time.strftime('%Y-%m-%d %H:%M:%S')}] Agent cycle starting...")
-        
-        if is_trading_hours():
-            print("✅ Within trading hours - checking signals...")
-            try:
-                check_signals()
-            except Exception as e:
-                print(f"❌ Error during signal check: {e}")
+        now = _now_et()
+        now_hhmm = now.strftime('%H:%M')
+        print(f"\n[{now.strftime('%Y-%m-%d %H:%M:%S ET')}] Agent heartbeat")
+
+        if _is_weekday_et() and now_hhmm in RUN_TIMES_ET:
+            history = load_history()
+            if _slot_already_sent_today(history, now_hhmm):
+                print(f"⏭️ Slot {now_hhmm} ET already sent today; skipping.")
+            else:
+                print(f"✅ Scheduled slot {now_hhmm} ET reached - running scan + email...")
+                try:
+                    check_signals()
+                    history = load_history()
+                    _mark_slot_sent_today(history, now_hhmm)
+                    save_history(history)
+                except Exception as e:
+                    print(f"❌ Error during scheduled run: {e}")
         else:
-            print("⏰ Outside trading hours - skipping signal check")
-        
-        print(f"💤 Sleeping for {CHECK_INTERVAL/60} minutes...")
-        time.sleep(CHECK_INTERVAL)
+            print("⏰ Not a scheduled send slot.")
+
+        time.sleep(POLL_INTERVAL_SECONDS)
 
 if __name__ == "__main__":
     # Verify environment variables
-    if not os.getenv("EMAIL_ADDRESS") or not os.getenv("EMAIL_PASSWORD"):
-        print("⚠️  Warning: EMAIL_ADDRESS and EMAIL_PASSWORD environment variables not set")
-        print("Email notifications will not work without these credentials")
+    if not (
+        (os.getenv("SMTP_USERNAME") and os.getenv("SMTP_PASSWORD"))
+        or (os.getenv("EMAIL_ADDRESS") and os.getenv("EMAIL_PASSWORD"))
+    ):
+        print("⚠️  SMTP credentials are not set")
+        print("Set SMTP_USERNAME/SMTP_PASSWORD (recommended for Zoho) or EMAIL_ADDRESS/EMAIL_PASSWORD")
     
     try:
         run_agent()
