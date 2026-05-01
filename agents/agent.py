@@ -115,23 +115,20 @@ def send_email_notification(subject, body):
         return False
 
 def check_signals():
-    """Check signals and send a digest email for the current scheduled run."""
+    """Check signals using the full signal engine and send a digest email."""
     print("Loading tickers...")
     tickers = load_tickers()
-    
+
     if not tickers:
         print("No tickers found. Skipping signal check.")
         return
-    
+
     print(f"Checking signals for {len(tickers)} tickers: {', '.join(tickers)}")
-    
-    history = load_history()
-    
-    # Make API request for signals
+
     ticker_param = ','.join(tickers)
-    
+
     try:
-        response = requests.get(SIGNALS_API_URL, params={'tickers': ticker_param}, timeout=30)
+        response = requests.get(SIGNALS_API_URL, params={'tickers': ticker_param}, timeout=60)
         response.raise_for_status()
         result = response.json()
     except requests.exceptions.RequestException as e:
@@ -141,56 +138,66 @@ def check_signals():
         print(f"Error parsing API response: {e}")
         return
 
-    new_signals = []
-    today = _today_et()
+    enter_signals = []
+    watch_signals = []
+    errors = []
 
-    for ticker, signals in result.items():
-        if "error" in signals:
-            print(f"Error for {ticker}: {signals['error']}")
+    for ticker, data in result.items():
+        if 'error' in data:
+            errors.append(f"{ticker}: {data['error']}")
             continue
 
-        # Get previous signals for this ticker
-        prev = history.get(ticker, {"buy_signals": [], "sell_signals": []})
-        
-        # Find new signals
-        new_buys = [d for d in signals.get('buy_signals', []) if d not in prev.get('buy_signals', [])]
-        new_sells = [d for d in signals.get('sell_signals', []) if d not in prev.get('sell_signals', [])]
+        sig = data.get('signal', 'IGNORE')
+        conf = data.get('confidence', 0)
+        reasons = data.get('reasons', [])
+        entry = data.get('entryPrice', 0)
+        stop = data.get('stopLoss', 0)
+        target = data.get('priceTarget', 0)
+        rr = data.get('riskReward', '0.00')
+        regime = data.get('marketRegime', '')
+        setup = data.get('setupType', '')
 
-        # Only include today's signals for immediate notification
-        new_buys_today = [d for d in new_buys if d == today]
-        new_sells_today = [d for d in new_sells if d == today]
+        line = (
+            f"  [{ticker}] {sig} | Confidence: {conf}% | Setup: {setup} | Regime: {regime}\n"
+            f"    Entry: ${entry}  Stop: ${stop}  Target: ${target}  R/R: {rr}\n"
+            f"    {'; '.join(reasons)}"
+        )
 
-        if new_buys_today or new_sells_today:
-            new_signals.append((ticker, new_buys_today, new_sells_today))
-
-        # Update history with all signals
-        history[ticker] = {
-            "buy_signals": signals.get('buy_signals', []),
-            "sell_signals": signals.get('sell_signals', [])
-        }
+        if sig == 'ENTER':
+            enter_signals.append(line)
+        elif sig == 'WATCH':
+            watch_signals.append(line)
 
     now_str = _now_et().strftime('%Y-%m-%d %H:%M:%S ET')
     body = f"Stock scan completed at {now_str}.\n\n"
 
-    if new_signals:
-        body += "New signals detected:\n"
-        for ticker, buys, sells in new_signals:
-            if buys:
-                body += f"🟢 [{ticker}] BUY signals on: {', '.join(buys)}\n"
-            if sells:
-                body += f"🔴 [{ticker}] SELL signals on: {', '.join(sells)}\n"
-        subject = f"🚨 Stock Signal Alert ({len(new_signals)} ticker(s))"
-    else:
-        body += "No new BUY/SELL signals in this run.\n"
-        subject = "📊 Stock Scan Digest (No New Signals)"
+    if enter_signals:
+        body += f"ENTER ({len(enter_signals)} ticker(s)):\n"
+        body += '\n'.join(enter_signals) + '\n\n'
 
-    body += f"\nChecked tickers: {', '.join(tickers)}\n"
-    body += f"Signal run count: {len(result)} ticker(s)\n"
+    if watch_signals:
+        body += f"WATCH ({len(watch_signals)} ticker(s)):\n"
+        body += '\n'.join(watch_signals) + '\n\n'
+
+    if not enter_signals and not watch_signals:
+        body += "No ENTER or WATCH signals. All tickers are IGNORE.\n\n"
+
+    if errors:
+        body += f"Errors ({len(errors)}): {'; '.join(errors)}\n\n"
+
+    body += f"Checked tickers: {', '.join(tickers)}\n"
+
+    if enter_signals:
+        subject = f"Stock Signal: {len(enter_signals)} ENTER signal(s)"
+    elif watch_signals:
+        subject = f"Stock Signal: {len(watch_signals)} WATCH signal(s)"
+    else:
+        subject = "Stock Scan Digest (No Signals)"
 
     print(body)
     send_email_notification(subject, body)
 
-    # Save updated history
+    history = load_history()
     save_history(history)
 
 def _slot_already_sent_today(history, slot_hhmm):
