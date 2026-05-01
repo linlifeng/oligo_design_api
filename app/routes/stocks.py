@@ -3,8 +3,117 @@ from flask import Blueprint, request, jsonify
 import logging
 import yfinance as yf
 import json
+import csv
+import io
+from urllib.request import Request, urlopen
 
 stocks_bp = Blueprint('stocks', __name__)
+
+
+def _build_response_from_rows(symbol, rows):
+    """Build API response shape from a normalized list of OHLCV rows."""
+    if not rows:
+        return None
+
+    time_series = {}
+    for row in rows:
+        date_str = row['date']
+        time_series[date_str] = {
+            "1. open": f"{row['open']:.4f}",
+            "2. high": f"{row['high']:.4f}",
+            "3. low": f"{row['low']:.4f}",
+            "4. close": f"{row['close']:.4f}",
+            "5. volume": str(int(row['volume']))
+        }
+
+    last_refreshed = max(time_series.keys())
+    return {
+        "Meta Data": {
+            "1. Information": "Daily Prices (open, high, low, close) and Volumes",
+            "2. Symbol": symbol,
+            "3. Last Refreshed": last_refreshed,
+            "4. Output Size": "Compact",
+            "5. Time Zone": "US/Eastern"
+        },
+        "Time Series (Daily)": time_series
+    }
+
+
+def _fetch_with_yfinance(symbol):
+    """Primary data source: yfinance history(), then yf.download() fallback."""
+    ticker = yf.Ticker(symbol)
+    hist = ticker.history(period='6mo', interval='1d', auto_adjust=False, actions=False)
+
+    if hist.empty:
+        hist = yf.download(
+            symbol,
+            period='6mo',
+            interval='1d',
+            auto_adjust=False,
+            progress=False,
+            threads=False,
+        )
+
+    if hist.empty:
+        return None
+
+    # yf.download can return multi-index columns depending on backend behavior.
+    if hasattr(hist.columns, 'nlevels') and hist.columns.nlevels > 1:
+        hist.columns = hist.columns.get_level_values(0)
+
+    required_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
+    if any(col not in hist.columns for col in required_cols):
+        return None
+
+    hist = hist.sort_index(ascending=False)
+    rows = []
+    for date, row in hist.iterrows():
+        rows.append({
+            'date': date.strftime('%Y-%m-%d'),
+            'open': float(row['Open']),
+            'high': float(row['High']),
+            'low': float(row['Low']),
+            'close': float(row['Close']),
+            'volume': float(row['Volume']),
+        })
+    return rows
+
+
+def _fetch_with_stooq(symbol):
+    """Secondary source: Stooq CSV endpoint, useful when Yahoo returns empty data."""
+    suffixes = ['', '.us']
+    user_agent = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36'
+
+    for suffix in suffixes:
+        stooq_symbol = f"{symbol.lower()}{suffix}"
+        url = f"https://stooq.com/q/d/l/?s={stooq_symbol}&i=d"
+        try:
+            req = Request(url, headers={'User-Agent': user_agent})
+            with urlopen(req, timeout=12) as resp:
+                csv_text = resp.read().decode('utf-8', errors='ignore')
+
+            reader = csv.DictReader(io.StringIO(csv_text))
+            rows = []
+            for r in reader:
+                # Stooq returns "N/D" for unavailable rows.
+                if not r.get('Date') or r.get('Close') in (None, '', 'N/D'):
+                    continue
+                rows.append({
+                    'date': r['Date'],
+                    'open': float(r['Open']),
+                    'high': float(r['High']),
+                    'low': float(r['Low']),
+                    'close': float(r['Close']),
+                    'volume': float(r.get('Volume') or 0),
+                })
+
+            if rows:
+                rows.sort(key=lambda x: x['date'], reverse=True)
+                return rows[:180]
+        except Exception:
+            continue
+
+    return None
 
 @stocks_bp.route('/signals', methods=['GET'])
 def get_signals():
@@ -57,39 +166,14 @@ def get_stock_data():
         return jsonify({'error': 'Missing stock symbol'}), 400
 
     try:
-        ticker = yf.Ticker(symbol)
-        hist = ticker.history(period='90d')  # Up to 60 days
+        rows = _fetch_with_yfinance(symbol)
+        if not rows:
+            rows = _fetch_with_stooq(symbol)
 
-        if hist.empty:
+        if not rows:
             return jsonify({'error': 'No data returned'}), 404
 
-        hist = hist.sort_index(ascending=False)
-
-        time_series = {}
-
-        for date, row in hist.iterrows():
-            date_str = date.strftime('%Y-%m-%d')
-            time_series[date_str] = {
-                "1. open": f"{row['Open']:.4f}",
-                "2. high": f"{row['High']:.4f}",
-                "3. low": f"{row['Low']:.4f}",
-                "4. close": f"{row['Close']:.4f}",
-                "5. volume": str(int(row['Volume']))
-            }
-
-        last_refreshed = max(time_series.keys())
-
-        response = {
-            "Meta Data": {
-                "1. Information": "Daily Prices (open, high, low, close) and Volumes",
-                "2. Symbol": symbol,
-                "3. Last Refreshed": last_refreshed,
-                "4. Output Size": "Compact",
-                "5. Time Zone": "US/Eastern"
-            },
-            "Time Series (Daily)": time_series
-        }
-
+        response = _build_response_from_rows(symbol, rows)
         return jsonify(response)
 
     except Exception as e:
