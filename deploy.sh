@@ -4,7 +4,7 @@ set -e  # Exit on any error
 echo "Starting deployment..."
 
 # Navigate to project directory
-cd /home/phill/dev/oligo_design_api
+cd /home/phill/dev/linlifeng_net_api
 
 # Stop existing gunicorn processes
 echo "Stopping existing API service..."

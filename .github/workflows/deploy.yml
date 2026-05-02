@@ -59,7 +59,7 @@ jobs:
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           source: "./"
-          target: "/home/phill/dev/oligo_design_api/"
+          target: "/home/phill/dev/linlifeng_net_api/"
           
       - name: Deploy and restart API on EC2
         uses: appleboy/ssh-action@master
@@ -68,7 +68,7 @@ jobs:
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
-            cd /home/phill/dev/oligo_design_api/
+            cd /home/phill/dev/linlifeng_net_api/
             chmod +x deploy.sh
             ./deploy.sh
             echo "Deploy script completed with exit code: $?"
