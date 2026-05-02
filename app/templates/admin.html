@@ -85,7 +85,7 @@
       <div class="alert alert-{{ message[0] }}">{{ message[1] }}</div>
     {% endif %}
 
-    <form method="POST" autocomplete="off">
+    <form id="settings-form" method="POST" autocomplete="off">
           <label for="to_email">Alert email recipient(s)</label>
           <input type="text" id="to_email" name="to_email"
             value="{{ cfg.to_email }}" placeholder="you@example.com, teammate@example.com" required>
@@ -133,6 +133,88 @@
 
       <button type="submit" class="btn">Save Settings</button>
     </form>
+
+    <details style="margin-top:2rem;">
+      <summary style="cursor:pointer;font-weight:600;font-size:1rem;color:#334155;">&#9881; Strategy Tuning</summary>
+      <div style="margin-top:1rem;">
+        <p style="font-size:.85rem;color:#64748b;margin-bottom:1rem;">
+          These values are read from <code>config.json</code> and sent to every <code>/signals</code> scan.
+          Change them here to adjust which setups fire and how confidence is calculated.
+        </p>
+
+        <label style="font-size:.8rem;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:#94a3b8;">Signal weights</label>
+        <div class="row" style="margin-top:.5rem;">
+          <div>
+            <label>SMA alignment</label>
+            <input form="settings-form" type="number" name="w_sma_align" step="0.1" min="0"
+                   value="{{ cfg.strategy.weights.sma_align | default(3.0) }}">
+          </div>
+          <div>
+            <label>Price momentum</label>
+            <input form="settings-form" type="number" name="w_price_mom" step="0.1" min="0"
+                   value="{{ cfg.strategy.weights.price_mom | default(2.0) }}">
+          </div>
+          <div>
+            <label>RSI</label>
+            <input form="settings-form" type="number" name="w_rsi" step="0.1" min="0"
+                   value="{{ cfg.strategy.weights.rsi | default(2.0) }}">
+          </div>
+          <div>
+            <label>MACD</label>
+            <input form="settings-form" type="number" name="w_macd" step="0.1" min="0"
+                   value="{{ cfg.strategy.weights.macd | default(1.5) }}">
+          </div>
+        </div>
+
+        <label style="font-size:.8rem;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:#94a3b8;margin-top:1.25rem;display:block;">Confidence thresholds</label>
+        <div class="row" style="margin-top:.5rem;">
+          <div>
+            <label>WATCH min %</label>
+            <input form="settings-form" type="number" name="t_watch_confidence_min" step="1"
+                   value="{{ cfg.strategy.thresholds.watch_confidence_min | default(40) }}">
+          </div>
+          <div>
+            <label>ENTER min %</label>
+            <input form="settings-form" type="number" name="t_enter_confidence_min" step="1"
+                   value="{{ cfg.strategy.thresholds.enter_confidence_min | default(45) }}">
+          </div>
+          <div>
+            <label>RSI oversold</label>
+            <input form="settings-form" type="number" name="t_rsi_oversold" step="1"
+                   value="{{ cfg.strategy.thresholds.rsi_oversold | default(35) }}">
+          </div>
+          <div>
+            <label>RSI overbought</label>
+            <input form="settings-form" type="number" name="t_rsi_overbought" step="1"
+                   value="{{ cfg.strategy.thresholds.rsi_overbought | default(70) }}">
+          </div>
+          <div>
+            <label>CCI oversold</label>
+            <input form="settings-form" type="number" name="t_cci_oversold" step="1"
+                   value="{{ cfg.strategy.thresholds.cci_oversold | default(-100) }}">
+          </div>
+        </div>
+
+        <label style="font-size:.8rem;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:#94a3b8;margin-top:1.25rem;display:block;">Active setups</label>
+        <div style="display:flex;gap:1.5rem;margin-top:.5rem;flex-wrap:wrap;">
+          <label style="display:flex;align-items:center;gap:.4rem;font-weight:normal;cursor:pointer;">
+            <input form="settings-form" type="checkbox" name="s_TREND"
+                   {% if cfg.strategy.setups.TREND %}checked{% endif %}>
+            Trend
+          </label>
+          <label style="display:flex;align-items:center;gap:.4rem;font-weight:normal;cursor:pointer;">
+            <input form="settings-form" type="checkbox" name="s_MEAN_REVERSION"
+                   {% if cfg.strategy.setups.MEAN_REVERSION %}checked{% endif %}>
+            Mean Reversion
+          </label>
+          <label style="display:flex;align-items:center;gap:.4rem;font-weight:normal;cursor:pointer;">
+            <input form="settings-form" type="checkbox" name="s_PULLBACK"
+                   {% if cfg.strategy.setups.PULLBACK %}checked{% endif %}>
+            Pullback
+          </label>
+        </div>
+      </div>
+    </details>
   </div>
 
   <script>

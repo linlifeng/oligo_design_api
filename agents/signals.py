@@ -274,8 +274,28 @@ def _position_params(price, volatility, confidence):
 # Main signal generator
 # ---------------------------------------------------------------------------
 
-def _generate_signals(data):
+def _generate_signals(data, strategy=None):
     """Port of JS generateTradingSignals(). data is processed OHLCV list."""
+    # --- resolve strategy params with defaults ---
+    s = strategy or {}
+    w = s.get('weights', {})
+    t = s.get('thresholds', {})
+    setups_on = s.get('setups', {})
+
+    W_SMA_ALIGN = float(w.get('sma_align', 3.0))
+    W_PRICE_MOM = float(w.get('price_mom', 2.0))
+    W_RSI       = float(w.get('rsi', 2.0))
+    W_MACD      = float(w.get('macd', 1.5))
+
+    WATCH_CONF_MIN = float(t.get('watch_confidence_min', 40))
+    ENTER_CONF_MIN = float(t.get('enter_confidence_min', 45))
+    RSI_OVERSOLD   = float(t.get('rsi_oversold', 35))
+    RSI_OVERBOUGHT = float(t.get('rsi_overbought', 70))
+    CCI_OVERSOLD   = float(t.get('cci_oversold', -100))
+
+    TREND_ON    = setups_on.get('TREND', True)
+    MEANREV_ON  = setups_on.get('MEAN_REVERSION', True)
+    PULLBACK_ON = setups_on.get('PULLBACK', True)
     def ignore(reasons, confidence=0, strength=0, regime='UNKNOWN'):
         return {
             'signal': 'IGNORE', 'setupType': 'NONE',
@@ -317,12 +337,12 @@ def _generate_signals(data):
     # Scores
     sma_align    = _sma_alignment(sma5, sma20, sma50, price)
     price_mom    = _price_momentum(price, price_history)
-    trend_score  = sma_align * 3 + price_mom * 2
+    trend_score  = sma_align * W_SMA_ALIGN + price_mom * W_PRICE_MOM
 
     rsi_zones      = _get_adaptive_rsi_zones(volatility)
     rsi_sc         = _rsi_score(rsi, rsi_zones)
     macd_analysis  = _analyze_macd(macd)
-    momentum_score = rsi_sc * 2 + macd_analysis['score'] * 1.5
+    momentum_score = rsi_sc * W_RSI + macd_analysis['score'] * W_MACD
 
     vol_regime   = _classify_volatility(volatility)
     vol_score    = _volatility_score(vol_regime, market_regime)
@@ -349,20 +369,20 @@ def _generate_signals(data):
     reasons    = []
     pullback   = _detect_pullback(data)
 
-    if trend_score > 0.4 and price > sma50 and sma20 > sma50:
+    if TREND_ON and trend_score > 0.4 and price > sma50 and sma20 > sma50:
         setup_type = 'TREND'
         reasons = ['Uptrend: Price > SMA50, SMA20 > SMA50']
-    elif abs(trend_score) < 0.2 and osc_score > 0.5:
+    elif MEANREV_ON and abs(trend_score) < 0.2 and osc_score > 0.5:
         setup_type = 'MEAN_REVERSION'
         reasons = ['Mean reversion: Oscillators in extreme territory']
-    elif trend_score > 0.3 and pullback['isPullback']:
+    elif PULLBACK_ON and trend_score > 0.3 and pullback['isPullback']:
         setup_type = 'PULLBACK'
         reasons = ['Pullback in uptrend']
 
     if setup_type == 'NONE':
         return ignore(['No valid setup detected'], confidence, strength, market_regime)
 
-    state = 'IGNORE' if confidence < 40 else 'WATCH'
+    state = 'IGNORE' if confidence < WATCH_CONF_MIN else 'WATCH'
     vol_too_high = volatility > 0.05
 
     ml   = macd['macdLine']
@@ -375,20 +395,20 @@ def _generate_signals(data):
     if setup_type == 'MEAN_REVERSION' and not vol_too_high:
         cci_val  = cci[-1] if cci else 0
         ao_turn  = len(ao) >= 2 and ao[-1] > ao[-2]
-        rsi_os   = rsi < 35
+        rsi_os   = rsi < RSI_OVERSOLD
         macd_pos = (len(ml) >= 3 and ml[-1] > sl_m[-1] and
                     len(hist) >= 2 and hist[-1] > hist[-2])
-        if cci_val < -100: entry_reasons.append('CCI reversal from oversold')
-        if ao_turn:        entry_reasons.append('AO turning positive')
-        if rsi_os:         entry_reasons.append(f'RSI oversold ({round(rsi)})')
-        if macd_pos:       entry_reasons.append('MACD bullish crossover')
-        mean_rev_entry = (cci_val < -100 and ao_turn and rsi_os) or (macd_pos and ao_turn)
+        if cci_val < CCI_OVERSOLD: entry_reasons.append('CCI reversal from oversold')
+        if ao_turn:                entry_reasons.append('AO turning positive')
+        if rsi_os:                 entry_reasons.append(f'RSI oversold ({round(rsi)})')
+        if macd_pos:               entry_reasons.append('MACD bullish crossover')
+        mean_rev_entry = (cci_val < CCI_OVERSOLD and ao_turn and rsi_os) or (macd_pos and ao_turn)
         if mean_rev_entry:
             reasons.append('Mean reversion entry: ' + ', '.join(entry_reasons))
 
     if setup_type == 'TREND' and not vol_too_high:
         ao_pos   = bool(ao) and ao[-1] > 0
-        rsi_ok   = rsi < 70
+        rsi_ok   = rsi < RSI_OVERBOUGHT
         macd_pos = len(ml) >= 3 and ml[-1] > sl_m[-1]
         if ao_pos:   entry_reasons.append('AO positive')
         if macd_pos: entry_reasons.append('MACD positive')
@@ -409,7 +429,7 @@ def _generate_signals(data):
             reasons.append('Pullback entry: ' + ', '.join(entry_reasons))
 
     any_entry = mean_rev_entry or trend_entry or pullback_entry
-    if any_entry and confidence >= 45:
+    if any_entry and confidence >= ENTER_CONF_MIN:
         state = 'ENTER'
         reasons.append(f'High confidence ({round(confidence)}%)')
     elif any_entry:
@@ -438,13 +458,14 @@ def _generate_signals(data):
 # Public entry point
 # ---------------------------------------------------------------------------
 
-def analyze(api_response):
+def analyze(api_response, strategy=None):
     """
     Pass the raw JSON from /api/stocks/stock?symbol=X.
     Returns a signal dict with keys: signal, confidence, reasons, entryPrice, stopLoss, priceTarget, ...
+    Optionally pass a strategy dict to override default weights/thresholds/setups.
     """
     time_series = api_response.get('Time Series (Daily)', {})
     if not time_series:
         return {'signal': 'IGNORE', 'reasons': ['No data returned'], 'confidence': 0}
     data = _process_api_data(time_series)
-    return _generate_signals(data)
+    return _generate_signals(data, strategy=strategy)

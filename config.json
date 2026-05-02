@@ -1,5 +1,27 @@
 {
   "to_email": "linlifeng@gmail.com",
   "run_times": ["09:35", "15:55"],
-  "tickers": ["AAPL", "GOOG", "TSLA", "SPY", "VTI", "QQQ", "DHR", "COKE", "RBLX", "META", "TMO", "BIO"]
+  "tickers": ["AAPL", "GOOG", "TSLA", "SPY", "VTI", "QQQ", "DHR", "COKE", "RBLX", "META", "TMO", "BIO"],
+  "batch_size": 20,
+  "batch_pause_seconds": 300,
+  "strategy": {
+    "weights": {
+      "sma_align": 3.0,
+      "price_mom": 2.0,
+      "rsi": 2.0,
+      "macd": 1.5
+    },
+    "thresholds": {
+      "watch_confidence_min": 40,
+      "enter_confidence_min": 45,
+      "rsi_oversold": 35,
+      "rsi_overbought": 70,
+      "cci_oversold": -100
+    },
+    "setups": {
+      "TREND": true,
+      "MEAN_REVERSION": true,
+      "PULLBACK": true
+    }
+  }
 }

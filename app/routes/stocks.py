@@ -5,10 +5,22 @@ import yfinance as yf
 import json
 import csv
 import io
+import os
 from urllib.request import Request, urlopen
 from agents.signals import analyze as analyze_signal
 
 stocks_bp = Blueprint('stocks', __name__)
+
+_BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_CONFIG_FILE = os.path.join(_BASE_DIR, 'config.json')
+
+
+def _load_strategy():
+    try:
+        with open(_CONFIG_FILE) as f:
+            return json.load(f).get('strategy', {})
+    except Exception:
+        return {}
 
 
 def _build_response_from_rows(symbol, rows):
@@ -134,7 +146,7 @@ def get_signals():
                 results[ticker] = {"error": "No data returned"}
                 continue
             api_response = _build_response_from_rows(ticker, rows)
-            results[ticker] = analyze_signal(api_response)
+            results[ticker] = analyze_signal(api_response, strategy=_load_strategy())
         except Exception as e:
             logging.error(f'Error processing ticker {ticker}: {e}')
             results[ticker] = {"error": str(e)}
