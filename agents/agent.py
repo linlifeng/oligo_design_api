@@ -97,17 +97,24 @@ def send_email_notification(subject, body, to_email=None):
             print("SMTP credentials missing (SMTP_USERNAME/SMTP_PASSWORD or EMAIL_ADDRESS/EMAIL_PASSWORD)")
             return False
 
+        recipients = [
+            r.strip() for r in str(to_email).replace(';', ',').split(',') if r.strip()
+        ]
+        if not recipients:
+            print("No recipient email configured")
+            return False
+
         msg = EmailMessage()
         msg['Subject'] = subject
         msg['From'] = mail_from
-        msg['To'] = to_email
+        msg['To'] = ', '.join(recipients)
         msg.set_content(body)
 
         with smtplib.SMTP(smtp_host, smtp_port, timeout=20) as smtp:
             if smtp_use_tls:
                 smtp.starttls()
             smtp.login(smtp_username, smtp_password)
-            smtp.send_message(msg)
+            smtp.send_message(msg, to_addrs=recipients)
         
         print("Email notification sent successfully")
         return True

@@ -86,9 +86,10 @@
     {% endif %}
 
     <form method="POST" autocomplete="off">
-      <label for="to_email">Alert email recipient</label>
-      <input type="email" id="to_email" name="to_email"
-             value="{{ cfg.to_email }}" placeholder="you@example.com" required>
+          <label for="to_email">Alert email recipient(s)</label>
+          <input type="text" id="to_email" name="to_email"
+            value="{{ cfg.to_email }}" placeholder="you@example.com, teammate@example.com" required>
+          <p class="hint">Single email or comma-separated list.</p>
 
       <hr class="divider">
 
