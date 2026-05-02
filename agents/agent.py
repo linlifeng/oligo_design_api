@@ -7,20 +7,38 @@ from datetime import datetime
 import pytz
 import os
 
-# Configuration
-API_BASE_URL = "https://api.oligodesign.com/api/stocks"
-TICKERS_API_URL = f"{API_BASE_URL}/tickers"
-SIGNALS_API_URL = f"{API_BASE_URL}/signals"
-HISTORY_FILE = "signal_history.json"
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+_BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CONFIG_FILE = os.path.join(_BASE_DIR, 'config.json')
 
-# Poll every minute, but only send at configured ET times.
+API_BASE_URL = "https://api.oligodesign.com/api/stocks"
+SIGNALS_API_URL = f"{API_BASE_URL}/signals"
+HISTORY_FILE = os.path.join(_BASE_DIR, 'signal_history.json')
+
 POLL_INTERVAL_SECONDS = int(os.getenv("AGENT_POLL_SECONDS", "60"))
-RUN_TIMES_ET = [
-    t.strip() for t in os.getenv("RUN_TIMES_ET", "09:35,15:55").split(",")
-    if t.strip()
-]
+# BATCH_SIZE and BATCH_PAUSE_SECONDS are read from config.json at runtime
 
 ET_TZ = pytz.timezone('US/Eastern')
+
+
+# ---------------------------------------------------------------------------
+# Config helpers — live-read every run so admin changes take effect immediately
+# ---------------------------------------------------------------------------
+
+def _load_config():
+    try:
+        with open(CONFIG_FILE) as f:
+            cfg = json.load(f)
+    except Exception:
+        cfg = {}
+    cfg.setdefault('tickers', ['AAPL', 'GOOGL', 'MSFT'])
+    cfg.setdefault('run_times', ['09:35', '15:55'])
+    cfg.setdefault('to_email', os.getenv('TO_EMAIL', 'linlifeng@gmail.com'))
+    cfg.setdefault('batch_size', int(os.getenv('BATCH_SIZE', '20')))
+    cfg.setdefault('batch_pause_seconds', int(os.getenv('BATCH_PAUSE_SECONDS', '300')))
+    return cfg
 
 
 def _now_et():
@@ -37,23 +55,6 @@ def _today_et():
 
 def _hhmm_et():
     return _now_et().strftime('%H:%M')
-
-def load_tickers():
-    """Load tickers from the API"""
-    try:
-        response = requests.get(TICKERS_API_URL, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-        return data.get('tickers', [])
-    except requests.exceptions.RequestException as e:
-        print(f"Error loading tickers from API: {e}")
-        # Fallback to local file if API fails
-        try:
-            with open('tickers.json') as f:
-                return json.load(f)['tickers']
-        except FileNotFoundError:
-            print("No local tickers file found. Using default tickers.")
-            return ['AAPL', 'GOOGL', 'MSFT']  # Default tickers
 
 def load_history():
     """Load signal history from file"""
@@ -80,7 +81,7 @@ def save_history(history):
     except Exception as e:
         print(f"Error saving history: {e}")
 
-def send_email_notification(subject, body):
+def send_email_notification(subject, body, to_email=None):
     """Send email notification via Zoho-compatible SMTP."""
     try:
         smtp_host = os.getenv("SMTP_HOST", "smtp.zoho.com")
@@ -89,7 +90,8 @@ def send_email_notification(subject, body):
         smtp_password = os.getenv("SMTP_PASSWORD") or os.getenv("EMAIL_PASSWORD")
         smtp_use_tls = os.getenv("SMTP_USE_TLS", "true").strip().lower() not in {"0", "false", "no"}
         mail_from = os.getenv("MAIL_FROM", smtp_username or "")
-        to_email = os.getenv("TO_EMAIL", "linlifeng@gmail.com")
+        if not to_email:
+            to_email = os.getenv("TO_EMAIL", "linlifeng@gmail.com")
 
         if not smtp_username or not smtp_password:
             print("SMTP credentials missing (SMTP_USERNAME/SMTP_PASSWORD or EMAIL_ADDRESS/EMAIL_PASSWORD)")
@@ -114,88 +116,121 @@ def send_email_notification(subject, body):
         print(f"Error sending email: {e}")
         return False
 
+def _fetch_signals_batched(tickers, batch_size=20, batch_pause=300):
+    """Fetch signals in batches of BATCH_SIZE with a pause between batches."""
+    results = {}
+    batches = [tickers[i:i + batch_size] for i in range(0, len(tickers), batch_size)]
+    total = len(batches)
+
+    for idx, batch in enumerate(batches, 1):
+        if total > 1:
+            print(f"  Batch {idx}/{total}: {', '.join(batch)}")
+        try:
+            response = requests.get(
+                SIGNALS_API_URL,
+                params={'tickers': ','.join(batch)},
+                timeout=120,
+            )
+            response.raise_for_status()
+            results.update(response.json())
+        except Exception as e:
+            print(f"  Batch {idx} error: {e}")
+            for t in batch:
+                results[t] = {'error': str(e)}
+
+        if idx < total:
+            print(f"  Pausing {batch_pause}s before next batch…")
+            time.sleep(batch_pause)
+
+    return results
+
+
+def _format_signal_line(ticker, data):
+    sig      = data.get('signal', 'IGNORE')
+    conf     = data.get('confidence', 0)
+    setup    = data.get('setupType', 'NONE')
+    regime   = data.get('marketRegime', '?')
+    entry    = data.get('entryPrice', 0)
+    stop     = data.get('stopLoss', 0)
+    target   = data.get('priceTarget', 0)
+    rr       = data.get('riskReward', '0.00')
+    xret     = data.get('expectedReturn', '0.0')
+    reasons  = data.get('reasons', [])
+    strength = data.get('strength', 0)
+    bars     = '█' * strength + '░' * (5 - strength)
+
+    line = (
+        f"  {ticker:<6}  {sig:<6}  conf:{conf:>3}%  [{bars}]  "
+        f"setup:{setup}  regime:{regime}\n"
+    )
+    if sig in ('ENTER', 'WATCH'):
+        line += (
+            f"          entry:${entry}  stop:${stop}  target:${target}  "
+            f"R/R:{rr}  exp:+{xret}%\n"
+        )
+    if reasons:
+        line += f"          {' | '.join(reasons)}\n"
+    return line, sig
+
+
 def check_signals():
-    """Check signals using the full signal engine and send a digest email."""
-    print("Loading tickers...")
-    tickers = load_tickers()
+    """Fetch signals for all tickers in batches, then email a rich digest."""
+    cfg = _load_config()
+    tickers  = cfg['tickers']
+    to_email = cfg['to_email']
 
     if not tickers:
-        print("No tickers found. Skipping signal check.")
+        print("No tickers in config. Skipping.")
         return
 
-    print(f"Checking signals for {len(tickers)} tickers: {', '.join(tickers)}")
+    print(f"Scanning {len(tickers)} tickers in batches of {cfg['batch_size']}…")
+    result = _fetch_signals_batched(tickers, cfg['batch_size'], cfg['batch_pause_seconds'])
 
-    ticker_param = ','.join(tickers)
+    enter_lines, watch_lines, ignore_lines, error_lines = [], [], [], []
 
-    try:
-        response = requests.get(SIGNALS_API_URL, params={'tickers': ticker_param}, timeout=60)
-        response.raise_for_status()
-        result = response.json()
-    except requests.exceptions.RequestException as e:
-        print(f"Error fetching signals from API: {e}")
-        return
-    except json.JSONDecodeError as e:
-        print(f"Error parsing API response: {e}")
-        return
-
-    enter_signals = []
-    watch_signals = []
-    errors = []
-
-    for ticker, data in result.items():
+    for ticker in tickers:
+        data = result.get(ticker, {'error': 'no response'})
         if 'error' in data:
-            errors.append(f"{ticker}: {data['error']}")
+            error_lines.append(f"  {ticker}: {data['error']}")
             continue
-
-        sig = data.get('signal', 'IGNORE')
-        conf = data.get('confidence', 0)
-        reasons = data.get('reasons', [])
-        entry = data.get('entryPrice', 0)
-        stop = data.get('stopLoss', 0)
-        target = data.get('priceTarget', 0)
-        rr = data.get('riskReward', '0.00')
-        regime = data.get('marketRegime', '')
-        setup = data.get('setupType', '')
-
-        line = (
-            f"  [{ticker}] {sig} | Confidence: {conf}% | Setup: {setup} | Regime: {regime}\n"
-            f"    Entry: ${entry}  Stop: ${stop}  Target: ${target}  R/R: {rr}\n"
-            f"    {'; '.join(reasons)}"
-        )
-
+        line, sig = _format_signal_line(ticker, data)
         if sig == 'ENTER':
-            enter_signals.append(line)
+            enter_lines.append(line)
         elif sig == 'WATCH':
-            watch_signals.append(line)
+            watch_lines.append(line)
+        else:
+            ignore_lines.append(line)
 
-    now_str = _now_et().strftime('%Y-%m-%d %H:%M:%S ET')
-    body = f"Stock scan completed at {now_str}.\n\n"
+    now_str = _now_et().strftime('%Y-%m-%d %H:%M ET')
+    body  = f"Stock scan — {now_str}\n"
+    body += f"Tickers: {len(tickers)}  |  ENTER: {len(enter_lines)}  WATCH: {len(watch_lines)}  IGNORE: {len(ignore_lines)}\n"
+    body += "=" * 60 + "\n\n"
 
-    if enter_signals:
-        body += f"ENTER ({len(enter_signals)} ticker(s)):\n"
-        body += '\n'.join(enter_signals) + '\n\n'
+    if enter_lines:
+        body += f"── ENTER ({len(enter_lines)}) ──────────────────────────────\n"
+        body += "".join(enter_lines) + "\n"
 
-    if watch_signals:
-        body += f"WATCH ({len(watch_signals)} ticker(s)):\n"
-        body += '\n'.join(watch_signals) + '\n\n'
+    if watch_lines:
+        body += f"── WATCH ({len(watch_lines)}) ──────────────────────────────\n"
+        body += "".join(watch_lines) + "\n"
 
-    if not enter_signals and not watch_signals:
-        body += "No ENTER or WATCH signals. All tickers are IGNORE.\n\n"
+    if ignore_lines:
+        body += f"── IGNORE ({len(ignore_lines)}) ─────────────────────────────\n"
+        body += "".join(ignore_lines) + "\n"
 
-    if errors:
-        body += f"Errors ({len(errors)}): {'; '.join(errors)}\n\n"
+    if error_lines:
+        body += f"── ERRORS ({len(error_lines)}) ─────────────────────────────\n"
+        body += "\n".join(error_lines) + "\n"
 
-    body += f"Checked tickers: {', '.join(tickers)}\n"
-
-    if enter_signals:
-        subject = f"Stock Signal: {len(enter_signals)} ENTER signal(s)"
-    elif watch_signals:
-        subject = f"Stock Signal: {len(watch_signals)} WATCH signal(s)"
+    if enter_lines:
+        subject = f"[Stock] {len(enter_lines)} ENTER signal(s) — {now_str}"
+    elif watch_lines:
+        subject = f"[Stock] {len(watch_lines)} WATCH — {now_str}"
     else:
-        subject = "Stock Scan Digest (No Signals)"
+        subject = f"[Stock] Digest (no signals) — {now_str}"
 
     print(body)
-    send_email_notification(subject, body)
+    send_email_notification(subject, body, to_email)
 
     history = load_history()
     save_history(history)
@@ -215,20 +250,22 @@ def _mark_slot_sent_today(history, slot_hhmm):
 def run_agent():
     """Main agent loop: send exactly at configured ET slots on weekdays."""
     print("Stock Signal Agent starting...")
-    print(f"Run times (ET): {', '.join(RUN_TIMES_ET)}")
-    print(f"Poll interval: {POLL_INTERVAL_SECONDS}s")
+    print(f"Poll interval: {POLL_INTERVAL_SECONDS}s  Batch size: {BATCH_SIZE}  Batch pause: {BATCH_PAUSE_SECONDS}s")
 
     while True:
+        cfg = _load_config()  # re-read every tick so admin changes are live
+        run_times = cfg.get('run_times', ['09:35', '15:55'])
+
         now = _now_et()
         now_hhmm = now.strftime('%H:%M')
-        print(f"\n[{now.strftime('%Y-%m-%d %H:%M:%S ET')}] Agent heartbeat")
+        print(f"\n[{now.strftime('%Y-%m-%d %H:%M:%S ET')}] heartbeat | slots: {', '.join(run_times)}")
 
-        if _is_weekday_et() and now_hhmm in RUN_TIMES_ET:
+        if _is_weekday_et() and now_hhmm in run_times:
             history = load_history()
             if _slot_already_sent_today(history, now_hhmm):
-                print(f"⏭️ Slot {now_hhmm} ET already sent today; skipping.")
+                print(f"⏭️  Slot {now_hhmm} already sent today; skipping.")
             else:
-                print(f"✅ Scheduled slot {now_hhmm} ET reached - running scan + email...")
+                print(f"✅ Slot {now_hhmm} ET — starting scan…")
                 try:
                     check_signals()
                     history = load_history()

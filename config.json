@@ -1,0 +1,5 @@
+{
+  "to_email": "linlifeng@gmail.com",
+  "run_times": ["09:35", "15:55"],
+  "tickers": ["AAPL", "GOOG", "TSLA", "SPY", "VTI", "QQQ", "DHR", "COKE", "RBLX", "META", "TMO", "BIO"]
+}
