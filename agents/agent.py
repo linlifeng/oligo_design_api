@@ -108,7 +108,12 @@ def send_email_notification(subject, body, to_email=None):
         msg['Subject'] = subject
         msg['From'] = mail_from
         msg['To'] = ', '.join(recipients)
-        msg.set_content(body)
+        # Set plain-text content first, then attach HTML alternative
+        import re as _re
+        plain_fallback = _re.sub(r'<[^>]+>', ' ', body).strip() if '<html' in body else body
+        msg.set_content(plain_fallback)
+        if '<html' in body:
+            msg.add_alternative(body, subtype='html')
 
         with smtplib.SMTP(smtp_host, smtp_port, timeout=20) as smtp:
             if smtp_use_tls:
@@ -152,7 +157,150 @@ def _fetch_signals_batched(tickers, batch_size=20, batch_pause=300):
     return results
 
 
+# ---------------------------------------------------------------------------
+# HTML email helpers
+# ---------------------------------------------------------------------------
+
+_SIG_COLORS = {
+    'ENTER':  {'bg': '#dcfce7', 'border': '#16a34a', 'badge_bg': '#16a34a', 'text': '#14532d'},
+    'WATCH':  {'bg': '#fefce8', 'border': '#ca8a04', 'badge_bg': '#ca8a04', 'text': '#713f12'},
+    'IGNORE': {'bg': '#f8fafc', 'border': '#cbd5e1', 'badge_bg': '#94a3b8', 'text': '#475569'},
+}
+
+
+def _sig_badge(sig):
+    c = _SIG_COLORS.get(sig, _SIG_COLORS['IGNORE'])
+    return (
+        f'<span style="background:{c["badge_bg"]};color:#fff;'
+        f'padding:2px 10px;border-radius:12px;font-size:12px;'
+        f'font-weight:700;letter-spacing:.5px;">{sig}</span>'
+    )
+
+
+def _strength_bar_html(strength):
+    filled = min(5, max(0, strength))
+    bars = ''.join(
+        f'<span style="display:inline-block;width:10px;height:10px;border-radius:2px;'
+        f'margin:0 1px;background:{"#16a34a" if i < filled else "#e2e8f0"};"></span>'
+        for i in range(5)
+    )
+    return f'<span style="vertical-align:middle">{bars}</span>'
+
+
+def _ticker_row_html(ticker, data):
+    sig      = data.get('signal', 'IGNORE')
+    conf     = data.get('confidence', 0)
+    setup    = data.get('setupType', 'NONE')
+    regime   = data.get('marketRegime', '?')
+    entry    = data.get('entryPrice', 0)
+    stop     = data.get('stopLoss', 0)
+    target   = data.get('priceTarget', 0)
+    rr       = data.get('riskReward', '0.00')
+    xret     = data.get('expectedReturn', '0.0')
+    reasons  = data.get('reasons', [])
+    strength = data.get('strength', 0)
+    c        = _SIG_COLORS.get(sig, _SIG_COLORS['IGNORE'])
+
+    detail = ''
+    if sig in ('ENTER', 'WATCH'):
+        detail = (
+            f'<tr style="background:{c["bg"]};">'
+            f'<td colspan="2" style="padding:4px 16px 8px 56px;color:#374151;font-size:13px;">'
+            f'Entry <b>${entry}</b> &nbsp;·&nbsp; '
+            f'Stop <b>${stop}</b> &nbsp;·&nbsp; '
+            f'Target <b>${target}</b> &nbsp;·&nbsp; '
+            f'R/R <b>{rr}</b> &nbsp;·&nbsp; '
+            f'Exp <b>+{xret}%</b>'
+            f'</td></tr>'
+        )
+    reasons_html = ''
+    if reasons:
+        reasons_html = (
+            f'<tr style="background:{c["bg"]};">'
+            f'<td colspan="2" style="padding:2px 16px 10px 56px;color:#6b7280;font-size:12px;">'
+            + ' &nbsp;|&nbsp; '.join(reasons) +
+            f'</td></tr>'
+        )
+
+    return (
+        f'<tr style="background:{c["bg"]};border-left:4px solid {c["border"]};'
+        f'border-bottom:1px solid #e2e8f0;">'
+        f'<td style="padding:10px 12px 10px 16px;font-weight:700;font-size:15px;'
+        f'color:#111;width:70px">{ticker}</td>'
+        f'<td style="padding:10px 12px;">'
+        f'{_sig_badge(sig)} &nbsp; '
+        f'{_strength_bar_html(strength)} &nbsp; '
+        f'<span style="font-size:12px;color:#6b7280;">conf:{conf}% &nbsp; {setup} &nbsp; {regime}</span>'
+        f'</td></tr>'
+        + detail + reasons_html
+    )
+
+
+def _build_html_email(enter_data, watch_data, ignore_data, errors, tickers, now_str):
+    """Build a full HTML email string."""
+    def section(title, color, rows_html):
+        if not rows_html:
+            return ''
+        return (
+            f'<tr><td colspan="2" style="padding:18px 16px 6px;'
+            f'font-size:13px;font-weight:700;color:{color};'
+            f'letter-spacing:.5px;border-top:2px solid {color};">{title}</td></tr>'
+            + rows_html
+        )
+
+    enter_rows  = ''.join(_ticker_row_html(t, d) for t, d in enter_data)
+    watch_rows  = ''.join(_ticker_row_html(t, d) for t, d in watch_data)
+    ignore_rows = ''.join(_ticker_row_html(t, d) for t, d in ignore_data)
+    error_rows  = ''.join(
+        f'<tr><td colspan="2" style="padding:6px 16px;color:#dc2626;font-size:13px;">{e}</td></tr>'
+        for e in errors
+    )
+
+    counts = (
+        f'<b style="color:#16a34a">{len(enter_data)} ENTER</b> &nbsp; '
+        f'<b style="color:#ca8a04">{len(watch_data)} WATCH</b> &nbsp; '
+        f'<b style="color:#94a3b8">{len(ignore_data)} IGNORE</b>'
+    )
+
+    body_rows = (
+        section('▲ ENTER', '#16a34a', enter_rows)
+        + section('◎ WATCH', '#ca8a04', watch_rows)
+        + section('— IGNORE', '#94a3b8', ignore_rows)
+        + (section('⚠ ERRORS', '#dc2626', error_rows) if error_rows else '')
+    )
+
+    return f"""<!DOCTYPE html>
+<html><head><meta charset="UTF-8"></head>
+<body style="margin:0;padding:0;background:#f1f5f9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+<table width="100%" cellpadding="0" cellspacing="0" style="background:#f1f5f9;padding:32px 0;">
+<tr><td align="center">
+<table width="600" cellpadding="0" cellspacing="0" style="background:#fff;border-radius:12px;
+  box-shadow:0 2px 8px rgba(0,0,0,.08);overflow:hidden;">
+
+  <!-- header -->
+  <tr style="background:#0f172a;">
+    <td colspan="2" style="padding:20px 24px;">
+      <span style="font-size:20px;font-weight:700;color:#fff;">📈 Stock Signal Digest</span><br>
+      <span style="font-size:12px;color:#94a3b8;">{now_str} &nbsp;·&nbsp; {len(tickers)} tickers scanned &nbsp;·&nbsp; {counts}</span>
+    </td>
+  </tr>
+
+  <!-- rows -->
+  {body_rows}
+
+  <!-- footer -->
+  <tr><td colspan="2" style="padding:16px 24px;background:#f8fafc;
+    border-top:1px solid #e2e8f0;font-size:11px;color:#94a3b8;">
+    Stock Signal Agent &nbsp;·&nbsp; oligodesign.com
+  </td></tr>
+
+</table>
+</td></tr></table>
+</body></html>"""
+
+
 def _format_signal_line(ticker, data):
+    """Plain-text fallback line (kept for console output)."""
     sig      = data.get('signal', 'IGNORE')
     conf     = data.get('confidence', 0)
     setup    = data.get('setupType', 'NONE')
@@ -181,7 +329,7 @@ def _format_signal_line(ticker, data):
 
 
 def check_signals():
-    """Fetch signals for all tickers in batches, then email a rich digest."""
+    """Fetch signals for all tickers in batches, then email a rich HTML digest."""
     cfg = _load_config()
     tickers  = cfg['tickers']
     to_email = cfg['to_email']
@@ -193,51 +341,44 @@ def check_signals():
     print(f"Scanning {len(tickers)} tickers in batches of {cfg['batch_size']}…")
     result = _fetch_signals_batched(tickers, cfg['batch_size'], cfg['batch_pause_seconds'])
 
-    enter_lines, watch_lines, ignore_lines, error_lines = [], [], [], []
+    enter_data, watch_data, ignore_data, error_lines = [], [], [], []
+    plain_lines = []
 
     for ticker in tickers:
         data = result.get(ticker, {'error': 'no response'})
         if 'error' in data:
-            error_lines.append(f"  {ticker}: {data['error']}")
+            error_lines.append(f"{ticker}: {data['error']}")
+            plain_lines.append(f"  {ticker}: ERROR — {data['error']}\n")
             continue
         line, sig = _format_signal_line(ticker, data)
+        plain_lines.append(line)
         if sig == 'ENTER':
-            enter_lines.append(line)
+            enter_data.append((ticker, data))
         elif sig == 'WATCH':
-            watch_lines.append(line)
+            watch_data.append((ticker, data))
         else:
-            ignore_lines.append(line)
+            ignore_data.append((ticker, data))
 
     now_str = _now_et().strftime('%Y-%m-%d %H:%M ET')
-    body  = f"Stock scan — {now_str}\n"
-    body += f"Tickers: {len(tickers)}  |  ENTER: {len(enter_lines)}  WATCH: {len(watch_lines)}  IGNORE: {len(ignore_lines)}\n"
-    body += "=" * 60 + "\n\n"
 
-    if enter_lines:
-        body += f"── ENTER ({len(enter_lines)}) ──────────────────────────────\n"
-        body += "".join(enter_lines) + "\n"
+    # Plain-text version (console + fallback)
+    plain  = f"Stock scan — {now_str}\n"
+    plain += f"Tickers: {len(tickers)}  ENTER:{len(enter_data)}  WATCH:{len(watch_data)}  IGNORE:{len(ignore_data)}\n"
+    plain += "=" * 60 + "\n"
+    plain += "".join(plain_lines)
+    print(plain)
 
-    if watch_lines:
-        body += f"── WATCH ({len(watch_lines)}) ──────────────────────────────\n"
-        body += "".join(watch_lines) + "\n"
+    # HTML version
+    html_body = _build_html_email(enter_data, watch_data, ignore_data, error_lines, tickers, now_str)
 
-    if ignore_lines:
-        body += f"── IGNORE ({len(ignore_lines)}) ─────────────────────────────\n"
-        body += "".join(ignore_lines) + "\n"
-
-    if error_lines:
-        body += f"── ERRORS ({len(error_lines)}) ─────────────────────────────\n"
-        body += "\n".join(error_lines) + "\n"
-
-    if enter_lines:
-        subject = f"[Stock] {len(enter_lines)} ENTER signal(s) — {now_str}"
-    elif watch_lines:
-        subject = f"[Stock] {len(watch_lines)} WATCH — {now_str}"
+    if enter_data:
+        subject = f"[Stock] {len(enter_data)} ENTER signal(s) — {now_str}"
+    elif watch_data:
+        subject = f"[Stock] {len(watch_data)} WATCH — {now_str}"
     else:
         subject = f"[Stock] Digest (no signals) — {now_str}"
 
-    print(body)
-    send_email_notification(subject, body, to_email)
+    send_email_notification(subject, html_body, to_email)
 
     history = load_history()
     save_history(history)
@@ -257,7 +398,7 @@ def _mark_slot_sent_today(history, slot_hhmm):
 def run_agent():
     """Main agent loop: send exactly at configured ET slots on weekdays."""
     print("Stock Signal Agent starting...")
-    print(f"Poll interval: {POLL_INTERVAL_SECONDS}s  Batch size: {BATCH_SIZE}  Batch pause: {BATCH_PAUSE_SECONDS}s")
+    print(f"Poll interval: {POLL_INTERVAL_SECONDS}s  (batch settings read from config.json)")
 
     while True:
         cfg = _load_config()  # re-read every tick so admin changes are live
